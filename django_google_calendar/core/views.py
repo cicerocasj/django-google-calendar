@@ -1,7 +1,7 @@
 import httplib2
 import logging
 import os
-
+import pickle
 from django.conf import settings
 from django.http import HttpResponseBadRequest
 from django.http import HttpResponseRedirect
@@ -9,16 +9,13 @@ from django.shortcuts import render
 from django.views.generic import View
 
 from googleapiclient.discovery import build
-from oauth2client import xsrfutil
+from oauth2client.contrib import xsrfutil
 from oauth2client.client import flow_from_clientsecrets
-from oauth2client.django_orm import Storage
 
-from core.models import CredentialsModel
 
 CLIENT_SECRETS = os.path.join(
-    os.path.dirname(__file__), 
-    '..',
-    'client_secrets.json')
+    settings.BASE_DIR,
+    'credentials.json')
 
 FLOW = flow_from_clientsecrets(
     CLIENT_SECRETS,
@@ -27,20 +24,17 @@ FLOW = flow_from_clientsecrets(
 
 
 class Index(View):
-    """"
-    Esta é a view que mostra os eventos do calendário do usuário.
-
-    Antes disso ela tenta pegar a credencial do usuário, se não existir, ela
-    encaminha para a url de autorização.
-    """
     def get(self, request):
-        storage = Storage(CredentialsModel, 'id', request.user, 'credential')
-        credential = storage.get()
+        credential = None
+        if os.path.exists('token.pickle'):
+            with open('token.pickle', 'rb') as token:
+                credential = pickle.load(token)
 
         if credential is None or credential.invalid is True:
-            FLOW.params['state'] = xsrfutil.generate_token(
-                settings.SECRET_KEY,
-                request.user)
+            chave = settings.SECRET_KEY
+            user = request.user
+            token = xsrfutil.generate_token(settings.GOOGLE_OAUTH2_CLIENT_SECRET, settings.GOOGLE_OAUTH2_CLIENT_ID)
+            FLOW.params['state'] = token
             authorize_url = FLOW.step1_get_authorize_url()
             return HttpResponseRedirect(authorize_url)
 
@@ -54,18 +48,16 @@ class Index(View):
 
 
 class AuthHandler(View):
-    """
-    Esta é a view que o Google redireciona depois da página de autorização. Se
-    tudo estiver certo ele salva a nova credential e redireciona para o "/"
-    """
     def get(self, request):
+        chave = settings.SECRET_KEY
+        state = bytes(request.GET.get('state'), 'utf-8')
+        user = request.user
         if not xsrfutil.validate_token(
-                settings.SECRET_KEY,
-                bytes(request.REQUEST['state'], 'utf-8'),
-                request.user):
-            return  HttpResponseBadRequest()
-
+            settings.GOOGLE_OAUTH2_CLIENT_SECRET, 
+            state, 
+            settings.GOOGLE_OAUTH2_CLIENT_ID):
+            return HttpResponseBadRequest()
         credential = FLOW.step2_exchange(request.REQUEST)
-        storage = Storage(CredentialsModel, 'id', request.user, 'credential')
-        storage.put(credential)
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(credential, token)
         return HttpResponseRedirect("/")
